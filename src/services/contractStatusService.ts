@@ -14,6 +14,20 @@ const BROKER_URL = (
   process.env.PACT_BROKER_BASE_URL ?? 'http://localhost:9292'
 ).replace(/\/+$/, '')
 
+/**
+ * The broker credentials.
+ *
+ * A broker on a public address MUST NOT allow public read: a contract states
+ * the shape of an internal API, and that is not something to publish. So this
+ * read is authenticated, and it works whether or not public read is on.
+ */
+const BROKER_AUTH =
+  'Basic ' +
+  Buffer.from(
+    `${process.env.PACT_BROKER_USERNAME ?? 'pact'}:` +
+      `${process.env.PACT_BROKER_PASSWORD ?? 'pact'}`,
+  ).toString('base64')
+
 const PACTICIPANTS = ['disbursement-service', 'switch-service']
 const CACHE_TTL_MS = 10_000
 
@@ -50,7 +64,10 @@ async function readBroker(): Promise<ContractStatus> {
 
     try {
       const response = await fetch(`${BROKER_URL}/matrix?${params.toString()}`, {
-        headers: { accept: 'application/hal+json' },
+        headers: {
+          accept: 'application/hal+json',
+          authorization: BROKER_AUTH,
+        },
         signal: AbortSignal.timeout(2_000),
       })
       if (!response.ok) {
