@@ -1,0 +1,210 @@
+name: ci
+
+# The pipeline of switch-service.
+#
+# The shape that matters:
+#
+#   test  ->  contract-gate  ->  deploy
+#
+# `deploy` needs `contract-gate`. That single line is what stops a broken
+# contract from reaching production. Without it the gate is only a report.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  # The broker calls this when switch-service publishes a new contract, so this
+  # repository learns at once that its promise is at risk.
+  repository_dispatch:
+    types: [contract-changed]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pact
+          POSTGRES_PASSWORD: pact
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pact"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Pact versions are git commits, so the history must be real.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: create the databases
+        run: |
+          export PGPASSWORD=pact
+          psql -h localhost -U pact -d postgres -c 'CREATE DATABASE switch_db;'
+          psql -h localhost -U pact -d postgres -c 'CREATE DATABASE switch_test_db;'
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: unit tests
+        run: npm run test:unit
+
+      - name: integration tests
+        run: npm run test:integration
+        env:
+          INTEGRATION_DATABASE_URL: postgres://pact:pact@localhost:5432/switch_test_db
+          INTEGRATION_REDIS_URL: redis://localhost:6379/3
+
+      - name: build the console
+        run: npm run console:build
+
+      - name: build
+        run: npm run build
+
+  contract-gate:
+    # THE GATE. A deploy is not allowed to start until this passes.
+    needs: test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pact
+          POSTGRES_PASSWORD: pact
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pact"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: create the databases
+        run: |
+          export PGPASSWORD=pact
+          psql -h localhost -U pact -d postgres -c 'CREATE DATABASE switch_test_db;'
+
+      - name: run the contract gate
+        run: bash ci/contract-gate.sh
+        env:
+          # The broker is ONE long-lived shared service. It must not be started
+          # inside the pipeline: a fresh broker is empty, and can-i-deploy then
+          # compares this version against nothing at all.
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+          # A pull request must use its own branch name, not "merge".
+          PACT_BRANCH: ${{ github.head_ref || github.ref_name }}
+          # Compare against what is live in production, not against a branch.
+          PACT_ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
+          PACT_RETRY_WHILE_UNKNOWN: 'true'
+          PACT_RETRY_TIMEOUT_SECONDS: '300'
+          # The provider verification runs against these.
+          PACT_DATABASE_URL: postgres://pact:pact@localhost:5432/switch_test_db
+          PACT_REDIS_URL: redis://localhost:6379/1
+
+      - name: keep the pact files for a failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pacts-and-logs
+          path: |
+            pacts/
+            logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  deploy:
+    # This job is the whole reason the gate exists.
+    #
+    # `needs: contract-gate` means a red gate stops the deploy. Never change
+    # this to `if: always()`, and never let the deploy depend on `test` alone.
+    needs: [test, contract-gate]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: deploy
+        run: |
+          echo "Put the real deploy here."
+          echo "The contract gate has already passed, so this version is safe to ship."
+
+      - name: tell the broker that this version is live
+        # Without this record, "can-i-deploy against production" has no idea
+        # what production is running, and the next gate answers "unknown".
+        #
+        # Skips itself when no broker is configured, so the pipeline is green
+        # on a fresh repository instead of red for a reason nobody chose.
+        run: |
+          if [ -z "$PACT_BROKER_BASE_URL" ]; then
+            echo "no broker is configured, so the deployment was not recorded."
+            echo "set the PACT_BROKER_BASE_URL secret to close this loop."
+            exit 0
+          fi
+          npm run pact:record-deployment
+        env:
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+          PACT_ENVIRONMENT: production

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.local
+
+# Pact writes these. A person never edits them and they never go into git.
+# The broker is the only exchange between the repositories.
+pacts/
+logs/
+
+# The console build output. Made by "npm run console:build".
+public/
