@@ -65,7 +65,14 @@ console.log(`  version     ${version}`)
 console.log(`  against     ${environment ?? 'the main branch of the other side'}`)
 
 const deadline = Date.now() + retryTimeoutMs
-let answer = await ask()
+
+// Which comparison this run is making. The retry loop below MUST keep asking
+// the same question: if it fell back to the main branch, a retry against the
+// environment would throw the fallback away and the loop would spin until it
+// timed out, reporting the environment's reason and hiding what really
+// happened.
+let useEnvironment = Boolean(environment)
+let answer = await ask(useEnvironment)
 
 // THE FIRST DEPLOY.
 //
@@ -89,7 +96,8 @@ if (environmentIsEmpty) {
       '  branch instead. This stops by itself once the first deploy is recorded\n' +
       '  with "npm run pact:record-deployment".',
   )
-  answer = await ask(false)
+  useEnvironment = false
+  answer = await ask(useEnvironment)
 }
 
 // A verification that has not happened yet reads as "unknown". In continuous
@@ -110,7 +118,7 @@ while (
       `waiting up to ${secondsLeft}s more`,
   )
   await new Promise((resolve) => setTimeout(resolve, POLL_MS))
-  answer = await ask()
+  answer = await ask(useEnvironment)
 }
 
 printRows(answer.rows)
