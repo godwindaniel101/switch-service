@@ -23,7 +23,7 @@ export class RoutingController {
     res.json({
       decisionId: decision.decisionId,
       channelId: decision.channelId,
-      strategy: decision.strategy,
+      routingStrategy: decision.strategy,
       windowMs: decision.windowMs,
       evaluatedAt: decision.evaluatedAt,
       candidates: decision.candidates.map((candidate) => ({
