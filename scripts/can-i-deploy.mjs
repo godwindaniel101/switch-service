@@ -95,6 +95,34 @@ console.log(
     `  unknown ${answer.summary.unknown ?? 0}`,
 )
 
+// A matrix with NO ROWS AT ALL is not a pass.
+//
+// The broker answers `deployable: true` with "There are no missing
+// dependencies" when it knows nothing about this version, because nothing is
+// missing when nothing is expected. That is a green light for a version that
+// has published no contract and had no verification, which is the opposite of
+// what this gate is for. A typo in the version number produces it, and so does
+// a dirty tree that invents a version nobody published.
+const rowCount =
+  (answer.summary.success ?? 0) +
+  (answer.summary.failed ?? 0) +
+  (answer.summary.unknown ?? 0)
+
+if (answer.summary.deployable === true && rowCount === 0) {
+  console.log('\ncan-i-deploy: NO')
+  console.log(
+    '\n  The broker holds NO contract rows for this version, so it said "there\n' +
+      '  are no missing dependencies". Nothing is missing because nothing is\n' +
+      '  known, and that is not the same as safe.\n\n' +
+      `  version asked about: ${version}\n` +
+      '   - is that the version the consumer tests published?\n' +
+      '   - was the tree dirty, so the version got a "-dirty" suffix?\n' +
+      '   - if this service genuinely has no contracts yet, set\n' +
+      '     PACT_ALLOW_NO_CONTRACTS=true to allow it deliberately\n',
+  )
+  process.exit(process.env.PACT_ALLOW_NO_CONTRACTS === 'true' ? 0 : 1)
+}
+
 if (answer.summary.deployable === true) {
   console.log('\ncan-i-deploy: YES\n')
   process.exit(0)
