@@ -21,12 +21,12 @@ const retryWhileUnknown = process.env.PACT_RETRY_WHILE_UNKNOWN === 'true'
 const retryTimeoutMs = Number(process.env.PACT_RETRY_TIMEOUT_SECONDS ?? 300) * 1_000
 const POLL_MS = 10_000
 
-function buildQuery() {
+function buildQuery(useEnvironment = Boolean(environment)) {
   const params = new URLSearchParams()
   params.append('q[][pacticipant]', me)
   params.append('q[][version]', version)
   params.append('latestby', 'cvp')
-  if (environment) {
+  if (useEnvironment) {
     // Compare against what is actually live in that environment.
     params.append('environment', environment)
   } else {
@@ -37,8 +37,8 @@ function buildQuery() {
   return params.toString()
 }
 
-async function ask() {
-  const result = await brokerFetch(`/matrix?${buildQuery()}`)
+async function ask(useEnvironment = Boolean(environment)) {
+  const result = await brokerFetch(`/matrix?${buildQuery(useEnvironment)}`)
   if (!result.ok) {
     console.error(JSON.stringify(result.body, null, 2))
     fail(`the broker answered ${result.status}`)
@@ -66,6 +66,31 @@ console.log(`  against     ${environment ?? 'the main branch of the other side'}
 
 const deadline = Date.now() + retryTimeoutMs
 let answer = await ask()
+
+// THE FIRST DEPLOY.
+//
+// Asking "can I deploy to production" cannot be answered while production is
+// empty: the broker has no version there to compare against. That is a
+// deadlock, because only a deploy can put the first version there.
+//
+// Recording a deployment to escape it would be a lie about what is running.
+// So fall back to the main branch instead, which is a real comparison, and say
+// clearly that it happened. The environment answer takes over by itself as soon
+// as the first deploy is recorded.
+const environmentIsEmpty =
+  environment &&
+  typeof answer.summary.reason === 'string' &&
+  answer.summary.reason.includes('no version is currently recorded as deployed')
+
+if (environmentIsEmpty) {
+  console.log(
+    `\n  nothing is recorded as deployed to ${environment} yet, so there is\n` +
+      '  nothing there to be incompatible with. Comparing against the main\n' +
+      '  branch instead. This stops by itself once the first deploy is recorded\n' +
+      '  with "npm run pact:record-deployment".',
+  )
+  answer = await ask(false)
+}
 
 // A verification that has not happened yet reads as "unknown". In continuous
 // integration that is normal for a short time: the broker webhook has to start
