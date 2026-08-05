@@ -169,14 +169,12 @@ The script does four steps:
 3. Verify the contracts that this service PROVIDES.
 4. Ask `can-i-deploy`. This step is the gate.
 
-Two pipeline files are here, and they do the same thing. **Keep the one that
-matches your platform and delete the other.** Two live pipelines drift apart,
-and then nobody knows which one is the real gate.
+The pipeline is `.github/workflows/ci.yml`.
 
-| File | Platform |
-|------|----------|
-| `.github/workflows/ci.yml` | GitHub Actions |
-| `.gitlab-ci.yml` | GitLab CI |
+A GitLab version existed alongside it for a while. It was deleted: two live
+pipeline files drift apart, and then nobody knows which one is the real gate.
+If you ever move to GitLab, port `ci/contract-gate.sh` — the gate itself is a
+shell script on purpose, so the pipeline file stays thin.
 
 ### What the pipeline needs
 
